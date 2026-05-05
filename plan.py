@@ -423,7 +423,7 @@ def quick_plan_from_text(
     :param rules_file: 业务规则文件路径
     :return: 执行计划
     """
-    from dataproject.intent import detect_intents, validate_and_fix_intents
+    from intent import detect_intents, validate_and_fix_intents
     
     print(f"\n💬 用户输入: {user_input}\n")
     
