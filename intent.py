@@ -1,51 +1,152 @@
 import openai
 import json
+import os
 from typing import List, Dict, Any, Optional
 
-# 配置 API（以 DeepSeek 为例）
+
+# ==================== Intent Registry ====================
+
+class IntentRegistry:
+    """意图定义注册器 - 支持从 JSON 加载和运行时动态注册"""
+
+    def __init__(self, config_path: Optional[str] = None):
+        self._definitions: Dict[str, Dict] = {}
+        if config_path:
+            self.load_from_file(config_path)
+        else:
+            default_path = os.path.join(os.path.dirname(__file__), "intent_definitions.json")
+            if os.path.exists(default_path):
+                self.load_from_file(default_path)
+
+    def load_from_file(self, file_path: str):
+        """从 JSON 文件加载意图定义"""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("意图定义文件必须是一个 JSON 对象")
+        for name, defn in data.items():
+            self._validate_definition(name, defn)
+            self._definitions[name] = defn
+        print(f"✅ 从 {file_path} 加载了 {len(data)} 个意图定义")
+
+    def register(self, name: str, definition: Dict):
+        """运行时注册一个新的意图"""
+        if name in self._definitions:
+            raise ValueError(f"意图 '{name}' 已注册")
+        self._validate_definition(name, definition)
+        self._definitions[name] = definition
+
+    def unregister(self, name: str):
+        """移除一个意图定义"""
+        if name not in self._definitions:
+            raise KeyError(f"意图 '{name}' 未注册")
+        del self._definitions[name]
+
+    def get(self, name: str) -> Optional[Dict]:
+        """获取指定意图定义"""
+        return self._definitions.get(name)
+
+    def list_all(self) -> Dict[str, Dict]:
+        """获取所有意图定义"""
+        return dict(self._definitions)
+
+    def list_names(self) -> List[str]:
+        """获取所有意图名称"""
+        return list(self._definitions.keys())
+
+    def count(self) -> int:
+        """获取意图数量"""
+        return len(self._definitions)
+
+    def validate_intent(self, intent_name: str, parameters: Dict) -> Dict:
+        """校验意图参数并进行类型转换"""
+        result = {"valid": True, "errors": [], "fixed_parameters": dict(parameters)}
+        if intent_name not in self._definitions:
+            result["valid"] = False
+            result["errors"].append(f"未知意图: {intent_name}")
+            return result
+
+        defn = self._definitions[intent_name]
+        fixed = result["fixed_parameters"]
+
+        missing = [p for p in defn["required"] if p not in parameters]
+        if missing:
+            result["errors"].append(f"缺少必需参数: {missing}")
+
+        for p, value in list(fixed.items()):
+            if p in defn["parameters"]:
+                expected = defn["parameters"][p]["type"]
+                try:
+                    converted = self._convert_type(value, expected)
+                    if converted is not None:
+                        fixed[p] = converted
+                except (ValueError, TypeError) as e:
+                    result["errors"].append(f"参数 {p} 类型转换失败: {e}")
+
+        return result
+
+    def _convert_type(self, value: Any, expected_type: str) -> Any:
+        if expected_type == "number" and isinstance(value, str):
+            if value.endswith("%"):
+                return float(value.rstrip("%")) / 100
+            return float(value)
+        elif expected_type == "integer" and isinstance(value, str):
+            return int(value)
+        elif expected_type == "string" and not isinstance(value, str):
+            return str(value)
+        return None
+
+    def _validate_definition(self, name: str, definition: Dict):
+        for key in ["description", "parameters", "required"]:
+            if key not in definition:
+                raise ValueError(f"意图 '{name}' 缺少必需字段: {key}")
+        if not isinstance(definition["description"], str):
+            raise ValueError(f"意图 '{name}' description 必须是字符串")
+        if not isinstance(definition["parameters"], dict):
+            raise ValueError(f"意图 '{name}' parameters 必须是对象")
+        if not isinstance(definition["required"], list):
+            raise ValueError(f"意图 '{name}' required 必须是数组")
+        for pn, pd in definition["parameters"].items():
+            if "type" not in pd or "description" not in pd:
+                raise ValueError(f"意图 '{name}' 参数 '{pn}' 缺少 type 或 description")
+
+    def save_to_file(self, file_path: Optional[str] = None):
+        """保存意图定义到 JSON 文件"""
+        if file_path is None:
+            file_path = os.path.join(os.path.dirname(__file__), "intent_definitions.json")
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(self._definitions, f, ensure_ascii=False, indent=2)
+        print(f"✅ 已保存 {len(self._definitions)} 个意图定义到 {file_path}")
+
+
+# 全局注册器单例
+_registry: Optional[IntentRegistry] = None
+
+
+def get_registry() -> IntentRegistry:
+    """获取全局意图注册器实例（惰性初始化）"""
+    global _registry
+    if _registry is None:
+        _registry = IntentRegistry()
+    return _registry
+
+
+# 配置 API
 client = openai.OpenAI(
     api_key="your-api-key",
-    base_url="https://api.deepseek.com/v1"  # 替换为实际 endpoint
+    base_url="https://api.deepseek.com/v1"
 )
 
-# 意图定义（用于验证和提示词生成）
-INTENT_DEFINITIONS = {
-    "modify_prize_probability": {
-        "description": "修改活动中奖品的概率",
-        "parameters": {
-            "activity_name": {"type": "string", "description": "活动名称"},
-            "prize_name": {"type": "string", "description": "奖品名称"},
-            "new_probability": {"type": "number", "description": "新的概率值，0~1之间"}
-        },
-        "required": ["activity_name", "prize_name", "new_probability"]
-    },
-    "generate_invitees": {
-        "description": "为活动生成指定数量的邀请码",
-        "parameters": {
-            "activity_name": {"type": "string", "description": "活动名称"},
-            "count": {"type": "integer", "description": "邀请码数量"}
-        },
-        "required": ["activity_name", "count"]
-    },
-    "set_reward_rule": {
-        "description": "设置活动的奖励规则",
-        "parameters": {
-            "activity_name": {"type": "string", "description": "活动名称"},
-            "action": {"type": "string", "enum": ["invite", "purchase"], "description": "触发动作"},
-            "reward_type": {"type": "string", "enum": ["points", "coupon"], "description": "奖励类型"},
-            "reward_value": {"type": "number", "description": "奖励数值"}
-        },
-        "required": ["activity_name", "action", "reward_type", "reward_value"]
-    }
-}
-
-def build_system_prompt() -> str:
+def build_system_prompt(registry: Optional[IntentRegistry] = None) -> str:
     """构建系统提示词，包含意图定义和输出格式要求"""
+    if registry is None:
+        registry = get_registry()
+
     intent_desc = []
-    for name, defn in INTENT_DEFINITIONS.items():
+    for name, defn in registry.list_all().items():
         params_desc = ", ".join([f"{p} ({info['type']}): {info.get('description', '')}" for p, info in defn["parameters"].items()])
         intent_desc.append(f"- {name}: {defn['description']}，参数：{params_desc}，必需参数：{defn['required']}")
-    
+
     prompt = f"""你是一个测试配置助手，负责将用户关于活动配置的需求转化为结构化的意图列表。支持以下意图：
 {chr(10).join(intent_desc)}
 
@@ -66,9 +167,9 @@ def build_system_prompt() -> str:
 """
     return prompt
 
-def detect_intents(user_input: str, history: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
+def detect_intents(user_input: str, history: Optional[List[Dict[str, str]]] = None, registry: Optional[IntentRegistry] = None) -> List[Dict[str, Any]]:
     """调用模型进行多意图识别，返回意图列表"""
-    messages = [{"role": "system", "content": build_system_prompt()}]
+    messages = [{"role": "system", "content": build_system_prompt(registry)}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
@@ -98,41 +199,35 @@ def detect_intents(user_input: str, history: Optional[List[Dict[str, str]]] = No
         print(f"意图识别失败: {e}")
         return []
 
-# 后处理示例：验证参数类型并补充默认值
-def validate_and_fix_intents(intents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def validate_and_fix_intents(intents: List[Dict[str, Any]], registry: Optional[IntentRegistry] = None) -> List[Dict[str, Any]]:
     """根据意图定义校验参数，尝试类型转换，标记缺失"""
+    if registry is None:
+        registry = get_registry()
+
     fixed = []
     for intent in intents:
         name = intent["intent"]
         params = intent.get("parameters", {})
-        if name not in INTENT_DEFINITIONS:
+
+        validation = registry.validate_intent(name, params)
+        if not validation["valid"]:
             print(f"未知意图: {name}，跳过")
             continue
-        defn = INTENT_DEFINITIONS[name]
-        # 检查必需参数
-        missing = [p for p in defn["required"] if p not in params]
-        if missing:
-            print(f"意图 {name} 缺少必需参数: {missing}，将在后续补齐")
-        # 类型转换（简单示例）
-        for p, value in list(params.items()):
-            if p in defn["parameters"]:
-                expected_type = defn["parameters"][p]["type"]
-                try:
-                    if expected_type == "number" and isinstance(value, str):
-                        # 处理百分比 "5%" -> 0.05
-                        if value.endswith("%"):
-                            params[p] = float(value.rstrip("%")) / 100
-                        else:
-                            params[p] = float(value)
-                    elif expected_type == "integer" and isinstance(value, str):
-                        params[p] = int(value)
-                except (ValueError, TypeError):
-                    print(f"参数 {p} 类型转换失败，保留原值 {value}")
-        fixed.append({"intent": name, "parameters": params})
+
+        for error in validation["errors"]:
+            print(f"意图 {name}: {error}")
+
+        fixed.append({"intent": name, "parameters": validation["fixed_parameters"]})
+
     return fixed
 
 # 示例使用
 if __name__ == "__main__":
+    registry = get_registry()
+    print("=" * 60)
+    print(f"已注册意图: {registry.list_names()}")
+    print("=" * 60)
+
     # 单意图
     user_input1 = "把双十一活动的一等奖概率改成5%"
     intents1 = detect_intents(user_input1)
@@ -155,3 +250,16 @@ if __name__ == "__main__":
     user_input3 = "为这个活动生成50个邀请码"
     intents3 = detect_intents(user_input3, history)
     print("带上下文意图3:", json.dumps(intents3, indent=2, ensure_ascii=False))
+
+    # 运行时注册演示
+    print("\n" + "=" * 60)
+    print("运行时注册演示")
+    print("=" * 60)
+    registry.register("new_test_intent", {
+        "description": "测试新增意图",
+        "parameters": {
+            "param1": {"type": "string", "description": "参数1"}
+        },
+        "required": ["param1"]
+    })
+    print(f"注册后意图列表: {registry.list_names()}")

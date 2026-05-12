@@ -1,0 +1,29 @@
+{
+  "modify_prize_probability": {
+    "description": "修改活动中奖品的概率",
+    "parameters": {
+      "activity_name": {"type": "string", "description": "活动名称"},
+      "prize_name": {"type": "string", "description": "奖品名称"},
+      "new_probability": {"type": "number", "description": "新的概率值，0~1之间"}
+    },
+    "required": ["activity_name", "prize_name", "new_probability"]
+  },
+  "generate_invitees": {
+    "description": "为活动生成指定数量的邀请码",
+    "parameters": {
+      "activity_name": {"type": "string", "description": "活动名称"},
+      "count": {"type": "integer", "description": "邀请码数量"}
+    },
+    "required": ["activity_name", "count"]
+  },
+  "set_reward_rule": {
+    "description": "设置活动的奖励规则",
+    "parameters": {
+      "activity_name": {"type": "string", "description": "活动名称"},
+      "action": {"type": "string", "enum": ["invite", "purchase"], "description": "触发动作"},
+      "reward_type": {"type": "string", "enum": ["points", "coupon"], "description": "奖励类型"},
+      "reward_value": {"type": "number", "description": "奖励数值"}
+    },
+    "required": ["activity_name", "action", "reward_type", "reward_value"]
+  }
+}
